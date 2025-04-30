@@ -31,7 +31,7 @@ def get_ollama_embedding(text):
 index = pinecone.Index(index_name)
 
 #Upsert in batches of 500
-for i in tqdm(range(0, len(texts), BATCH_SIZE), desc="Upserting to Pinecone"):
+for i in tqdm(range(0, len(texts), BATCH_SIZE), desc="Upserting to Pinecone", ncols=100):
     batch_texts = texts[i:i + BATCH_SIZE]
     batch_ids = ids[i:i + BATCH_SIZE]
     batch_metadata = df.iloc[i:i + BATCH_SIZE][METADATA_COLUMNS].to_dict(orient="records")
