@@ -1,42 +1,45 @@
-import pandas as pd
-from pinecone import Pinecone, ServerlessSpec
-from tqdm import tqdm
+from langchain_community.document_loaders.csv_loader import CSVLoader
+from langchain_ollama import OllamaEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_pinecone import PineconeVectorStore
+from pinecone import Pinecone
 import os
-from ollama import embed
 from dotenv import load_dotenv
+from tqdm import tqdm 
 
 load_dotenv()
 PINECONEAPI_KEY = os.getenv('PINECONE_API_KEY')
+INDEX_NAME = "citypayroll"
+
+#Chunk - Init RecursiveCharacterTextSplitter object
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500, 
+    chunk_overlap=50, 
+    add_start_index=True
+)
+
+#Embedding - Init OllamaEmbeddings object
+embeddings_model = OllamaEmbeddings(model="nomic-embed-text")
 
 #Initialize Pincone Client
-pinecone = Pinecone(
-        api_key=PINECONEAPI_KEY
-    )
-BATCH_SIZE = 500
-METADATA_COLUMNS = ["Fiscal Year", "Work Location Borough", 
-                    "Title Description","Base Salary","Pay Basis", "Regular Hours", 
-                    "Regular Gross Paid", "OT Hours", "Total OT Paid", "Total Other Pay"]
-index_name = "citypayroll"
+pinecone = Pinecone( api_key=PINECONEAPI_KEY )
+index = pinecone.Index(INDEX_NAME)
 
-#Load CSV file
-df = pd.read_csv("Citywide_Payroll_Data__Fiscal_Year__20250425.csv")
-texts = df["Agency Name"].fillna("").astype(str).tolist()
-ids = [str(i) for i in range(len(df))]
+vector_store = PineconeVectorStore(embedding=embeddings_model, index=index, namespace="nyc-city-payroll")
 
-#Get (Ollama) embeddings
-def get_ollama_embedding(text):
-    response = embed(model='nomic-embed-text', input=text)
-    return response["embeddings"][0]
+#Load CSV
+file_path = "Citywide_Payroll_Data__Fiscal_Year__20250425.csv"
+loader = CSVLoader(file_path=file_path, encoding="utf-8")
+data = loader.load()
 
-index = pinecone.Index(index_name)
+#Split Docs
+all_splits = text_splitter.split_documents(data)
 
-#Upsert in batches of 500
-for i in tqdm(range(0, len(texts), BATCH_SIZE), desc="Upserting to Pinecone", ncols=100):
-    batch_texts = texts[i:i + BATCH_SIZE]
-    batch_ids = ids[i:i + BATCH_SIZE]
-    batch_metadata = df.iloc[i:i + BATCH_SIZE][METADATA_COLUMNS].to_dict(orient="records")
+def batch_documents(documents, batch_size=500):
+    for i in range(0, len(documents), batch_size):
+        yield documents[i:i + batch_size]
 
-    embeddings = [get_ollama_embedding(text) for text in batch_texts]
+batches = list(batch_documents(all_splits, batch_size=100))
 
-    vectors = [(id_, emb, metadata) for id_, emb, metadata in zip(batch_ids, embeddings, batch_metadata)]
-    index.upsert(vectors=vectors, namespace="nyc-city-payroll")
+for batch in tqdm(batches, desc="Upsert to Pinecone"):
+    vector_store.add_documents(documents=batch)
