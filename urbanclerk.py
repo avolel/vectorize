@@ -35,10 +35,8 @@ system_prompt = {
     "role": "system",
     "content": (
         "You are a factual assistant who answers questions about New York City employees using only the provided context.\n\n"
-        "If the context is missing, unrelated, or insufficient to answer the question with certainty, "
-        "respond strictly with:\n\n"
-        "\"I'm sorry, I don't have enough information to answer that based on the available data.\"\n\n"
-        "Do not make up answers. Do not use outside knowledge. Only refer to the context provided in the conversation."
+        "If the context does not clearly contain information to answer the question, say you are unsure based on the data.\n"
+        "Avoid guessing, but feel free to reference the exact figures or titles mentioned in the context."
     )
 }
 
@@ -49,28 +47,41 @@ chat_history: List[Dict[str, str]] = [system_prompt]
 def Retrieve_Context(query: str, top_k: int = 3) -> str:
     try:
         query_embedding = embed(model='nomic-embed-text', input=query)
-        results = index.query(vector=query_embedding["embeddings"][0], top_k=top_k, include_metadata=True, namespace="nyc-city-payroll")
+        results = index.query(
+            vector=query_embedding["embeddings"][0],
+            top_k=top_k,
+            include_metadata=True,
+            namespace="nyc-city-payroll"
+        )
 
         if not results["matches"]:
             logging.warning("No relevant matches were found in Pinecone for this query: %s", query)
             return ""
-        
-        # Format each result into readable summary
+
         docs = []
         for match in results["matches"]:
-            md = match["metadata"]
-            summary = (
-                f"Title: {md.get('Title Description')}\n"
-                f"Location: {md.get('Work Location Borough')}\n"
-                f"Base Salary: ${md.get('Base Salary'):,.2f} {md.get('Pay Basis')}\n"
-                f"Gross Paid: ${md.get('Regular Gross Paid'):,.2f}\n"
-                f"Other Pay: ${md.get('Total Other Pay'):,.2f}\n"
-                f"OT Hours: {md.get('OT Hours')}, OT Pay: ${md.get('Total OT Paid'):,.2f}\n"
-                f"Year: {int(md.get('Fiscal Year'))}"
-            )
-        docs.append(summary)
-        
+            md = match.get("metadata", {})
+
+            try:
+                summary = (
+                    f"Title Description: {md.get('Title Description', 'N/A')}\n"
+                    f"First Name: {md.get('First Name', 'N/A')}\n"                    
+                    f"Last Name: {md.get('Last Name', 'N/A')}\n"
+                    f"Agency Name: {md.get('nAgency Name', 'N/A')}\n"
+                    f"Work Location Borough: {md.get('Work Location Borough', 'N/A')}\n"
+                    f"Base Salary: ${md.get('Base Salary', 0):,.2f} {md.get('Pay Basis', 'N/A')}\n"
+                    f"Regular Gross Paid: ${md.get('Regular Gross Paid', 0):,.2f}\n"
+                    f"Total Other Pay: ${md.get('Total Other Pay', 0):,.2f}\n"
+                    f"OT Hours: {md.get('OT Hours', 0)}, Total OT Pay: ${md.get('Total OT Paid', 0):,.2f}\n"
+                    f"Fiscal Year: {int(md.get('Fiscal Year', 0))}"
+                )
+                docs.append(summary)
+            except Exception as e:
+                logging.warning("Skipped a match due to formatting error: %s", str(e))
+                continue
+
         return "\n\n---\n\n".join(docs)
+
     except PineconeApiException as e:
         logging.error("Pinecone API error: %s", str(e))
         return ""
@@ -127,9 +138,15 @@ def Main():
                 continue
 
             #Inject the context into the convo
-            augmented_prompt = f"Context:\n{context}\n\nQuestion: {prompt}"
-            user_prompt = {'role': 'user', 'content': augmented_prompt}
-            chat_history.append(user_prompt)
+            chat_history.append({
+                'role': 'assistant',
+                'content': f"Here is the relevant context:\n{context}"
+            })
+
+            chat_history.append({
+                'role': 'user',
+                'content': prompt
+            })
 
             response = LLamaChat(chat_history)
             reply = Streaming(response)
